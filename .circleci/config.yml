@@ -1,0 +1,241 @@
+version: 2
+jobs:
+  build-n-deploy-dev:
+  # Part of application deployment workflow
+    working_directory: ~
+    environment:
+      - ENV: "dev"
+      - JOB_NAME: "stepstone-techradar"
+      - CLUSTER: "general-purpose"
+      - AWS_DEFAULT_REGION: "eu-west-1"
+      - AWS_ACCOUNT_ID: "796467622059"
+    docker:
+      - image: 796467622059.dkr.ecr.eu-west-1.amazonaws.com/stepweb-docker17-05
+        aws_auth:
+          aws_access_key_id: ${AWS_ACCESS_KEY_ID_DEV}
+          aws_secret_access_key: ${AWS_SECRET_ACCESS_KEY_DEV}
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Build and tag docker image
+          command: |
+            AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_DEV} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_DEV} bash +x bin/build.sh
+      - deploy:
+          name: Deploy dev-latest image
+          command: |
+            AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_DEV} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_DEV} bash +x bin/ecs-deploy.sh
+      - run:
+          name: Verify deployment status
+          command: |
+            echo -e "Wait for service to be stable... \n Check status of the deployment here:"
+            echo "https://eu-west-1.console.aws.amazon.com/ecs/home?region=eu-west-1#/clusters/${CLUSTER}/services/${JOB_NAME}/deployments"
+            AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_DEV} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_DEV} aws ecs wait services-stable --services ${JOB_NAME} --cluster ${CLUSTER} || exit 1
+            echo "Deployment successful..."
+      - run:
+          name: Promote image to live
+          command: |
+            echo "Promoting image to live..."
+            export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_LIVE}
+            export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_LIVE}
+            eval $(aws ecr get-login --region eu-west-1)
+            docker tag 796467622059.dkr.ecr.eu-west-1.amazonaws.com/${JOB_NAME}:dev-latest 203131569539.dkr.ecr.eu-west-1.amazonaws.com/${JOB_NAME}:live-latest || exit 1
+            docker push 203131569539.dkr.ecr.eu-west-1.amazonaws.com/${JOB_NAME}:live-latest
+
+  test-dev:
+  # Part of application deployment workflow
+    working_directory: ~
+    environment:
+      - ENV: "dev"
+      - JOB_NAME: "stepstone-techradar"
+    docker:
+      - image: ubuntu:16.04
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Install test dependencies
+          command: |
+            apt-get update && apt-get install -y curl awscli wget
+      - run:
+          name: Test dev
+          command: |
+            echo "Uncomment below test if you have configured Kong API Gateway for your application"
+            #export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_DEV}
+            #export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_DEV}
+            #bash +x bin/sg_access.sh authorize dev-ecs
+            #HTTP_CODE=$(curl -sL -w "%{http_code}\\n" -H "apikey: ${API_GATEWAY_API_KEY}" "https://dev-kong-api.trufa.me/stepstone-techradar" -o /dev/null)
+            #if [ $HTTP_CODE == "200" ]; then echo "Test completed successfully"; else echo "Test failed" && exit 1; fi
+            #bash +x bin/sg_access.sh revoke dev-ecs
+
+  deploy-live:
+  # Part of application deployment workflow
+    working_directory: ~
+    environment:
+      - ENV: "live"
+      - JOB_NAME: "stepstone-techradar"
+      - CLUSTER: "general-purpose"
+      - AWS_DEFAULT_REGION: "eu-west-1"
+      - AWS_ACCOUNT_ID: "203131569539"
+    docker:
+      - image: 796467622059.dkr.ecr.eu-west-1.amazonaws.com/stepweb-docker17-05
+        aws_auth:
+          aws_access_key_id: ${AWS_ACCESS_KEY_ID_DEV}
+          aws_secret_access_key: ${AWS_SECRET_ACCESS_KEY_DEV}
+    steps:
+      - checkout
+      - setup_remote_docker
+      - deploy:
+          name: Deploy live-latest tag
+          command: |
+            echo "Deploying image to production..."
+            AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_LIVE} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_LIVE} bash +x bin/ecs-deploy.sh
+      - run:
+          name: Verify deployment status
+          command: |
+            echo -e "Wait for service to be stable...\n Check status of the deployment here:"
+            echo "https://eu-west-1.console.aws.amazon.com/ecs/home?region=eu-west-1#/clusters/${CLUSTER}/services/${JOB_NAME}/deployments"
+            AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_LIVE} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_LIVE} aws ecs wait services-stable --services ${JOB_NAME} --cluster ${CLUSTER} || exit 1
+            echo "Deployment successful..."
+
+  build-dev-infrastructure:
+  # Part of infrastructure build workflow.
+    working_directory: ~
+    environment:
+      - ENV: "dev"
+      - AWS_DEFAULT_REGION: "eu-west-1"
+    docker:
+      - image: hashicorp/terraform:0.10.7
+    steps:
+      - checkout
+      - setup_remote_docker
+      - add_ssh_keys:
+          fingerprints:
+            - "11:08:a3:34:45:fe:4e:5f:3f:c0:50:4a:63:3c:bc:55"
+      - deploy:
+          name: Build DEV infrastructure
+          command: |
+            cd infrastructure/${ENV}
+            export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_DEV}
+            export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_DEV}
+            terraform init
+            terraform plan
+            terraform apply
+
+  plan-live-infrastructure-changes:
+  # Part of infrastructure build workflow
+    working_directory: ~
+    environment:
+      - ENV: "live"
+      - AWS_DEFAULT_REGION: "eu-west-1"
+    docker:
+      - image: hashicorp/terraform:0.10.7
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Plan changes on LIVE infrastructure
+          command: |
+            export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_LIVE}
+            export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_LIVE}
+            cd infrastructure/${ENV}
+            terraform init
+            terraform plan
+
+  build-live-infrastructure:
+  # Part of infrastructure build workflow
+    working_directory: ~
+    environment:
+      - ENV: "live"
+      - AWS_DEFAULT_REGION: "eu-west-1"
+    docker:
+      - image: hashicorp/terraform:0.10.7
+    steps:
+      - checkout
+      - setup_remote_docker
+      - deploy:
+          name: Build LIVE infrastructure
+          command: |
+            export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_LIVE}
+            export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_LIVE}
+            cd infrastructure/${ENV}
+            terraform init
+            terraform apply
+
+workflows:
+  version: 2
+  build-n-deploy-app:
+  # Application deployment workflow
+    jobs:
+      - build-n-deploy-dev:
+          context: org-global
+          filters:
+            branches:
+              only:
+                - release/continuous
+                - release/dev
+      - test-dev:
+          context: org-global
+          requires:
+            - build-n-deploy-dev
+          filters:
+            branches:
+              only:
+                - release/continuous
+                - release/dev
+      - deploy-approval:
+          requires:
+            - test-dev
+          type: approval
+      - deploy-live:
+          context: org-global
+          requires:
+            - deploy-approval
+          filters:
+            branches:
+              only: release/continuous
+
+  deploy-live-only:
+  # Application deployment workflow
+    jobs:
+      - deploy-live:
+          context: org-global
+          filters:
+            branches:
+              only: release/live
+
+  build-infrastructure:
+  # Infrastructure build workflow
+    jobs:
+      - build-dev-infrastructure:
+          context: org-global
+          filters:
+            branches:
+              only: infrastructure
+      - plan-live-infrastructure-changes:
+          context: org-global
+          filters:
+            branches:
+              only: infrastructure
+          requires:
+            - build-dev-infrastructure
+      - infrastructure-build-approval:
+          requires:
+            - plan-live-infrastructure-changes
+          type: approval
+      - build-live-infrastructure:
+          context: org-global
+          filters:
+            branches:
+              only: infrastructure
+          requires:
+            - infrastructure-build-approval
+
+  test-stages:
+  # Test stage separately
+    jobs:
+      - test-dev:
+          context: org-global
+          filters:
+            branches:
+              only: test-stages
