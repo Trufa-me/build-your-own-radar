@@ -15,7 +15,7 @@ module "stepstone-techradar" {
   #cpu = "0" # The number of cpu units to reserve for the container - https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html
   memory = "1024" # memory allocation for single service container
 
-  desired_count = "2" # Desired count of service containers
+  desired_count = "1" # Desired count of service containers
 
   # Service to loadbalancer registration - configuration options
   #deregistration_delay = "10" # The amount time for ALB to wait before changing the state of a deregistering target from draining to unused
