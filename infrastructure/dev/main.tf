@@ -33,6 +33,20 @@ module "stepstone-techradar" {
 /*
   Additional configurations
 */
+resource "aws_alb_listener_rule" "step_auth" {
+  listener_arn = "${module.stepstone-techradar.aws_alb_listener_arn}"
+
+  #priority     = 100
+
+  action {
+    type             = "forward"
+    target_group_arn = "${module.stepstone-techradar.tg_arn}"
+  }
+  condition {
+    field  = "host-header"
+    values = ["stepstone-techradar.trufa.me"]
+  }
+}
 
 // This module requires specific terraform version
 module "terraform_version" {
